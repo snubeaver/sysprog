@@ -72,6 +72,12 @@
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define PACK(size, alloc) ((size) | (alloc))
 
+//heap checker
+#ifdef DEBUG
+# define CHECKHEAP(lineno) printf("%s\n", __func); mm_checkheap(__LINE__);
+#endif
+
+
 // my function implemented
 void *free_lists[LIST];
 static void *extend_heap(size_t size);
@@ -79,6 +85,7 @@ static void *coalesce(void *ptr);
 static void *place(void *ptr, size_t asize);
 static void insert_node(void *ptr, size_t size);
 static void delete_node(void *ptr);
+static int mm_check(void);
 
 static void *extend_heap(size_t size){
   size_t tempsize=size;
@@ -307,6 +314,7 @@ int mm_init(void)
  */
 void *mm_malloc(size_t size)
 {
+    // mm_check();
     size_t asize;
     size_t extendsize;
     void *ptr = NULL;
@@ -350,6 +358,7 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
+    // mm_check();
     size_t size = GET_SIZE(HDRP(ptr));
     //remove realloc bit
     REMOVE_RATAG(HDRP(NEXT_BLKP(ptr)));
@@ -366,70 +375,42 @@ void mm_free(void *ptr)
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
  */
-void *mm_realloc(void *ptr, size_t size)
-{
-    // void *oldptr = ptr;
-    // void *newptr;
-    // size_t copySize;
-    //
-    // newptr = mm_malloc(size);
-    // if (newptr == NULL)
-    //   return NULL;
-    // copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    // if (size < copySize)
-    //   copySize = size;
-    // memcpy(newptr, oldptr, copySize);
-    // mm_free(oldptr);
-    // return newptr;
-    if(size == 0 )
-        return NULL;
+void *mm_realloc(void *ptr, size_t size){
     void * oldptr = ptr;
-    size_t newsize =size;   //size of the new block
-    int remain; //the remain size after allocation
-    int extend; //size of heap extension
+    size_t newsize =size;
+    // remain is the leftover when splited
+    int remain;
+    // amount of extended space
+    int extend;
     int blockbuff;
 
-    //align block size
-    if( size <= DSIZE)
-    {
+    if(size == 0 )
+        return NULL;
+    //alignment
+    if( size <= DSIZE){
         newsize = 2*DSIZE;
     }
-    else
-    {
+    else{
         newsize =ALIGN(size + DSIZE);
-    }
-    //add overhead requirment for block size
-    newsize += REALLOC_BUFFER;
-    //calculate the block buffer
+    }newsize += REALLOC_BUFFER;
     blockbuff = GET_SIZE(HDRP(ptr)) - newsize;
-    //not enough space
-    if(blockbuff < 0)
-    {
-        //check if the next block is free or the epilogue block
-        if(GET_ALLOC(HDRP(NEXT_BLKP(ptr)))==0 || GET_SIZE(HDRP(NEXT_BLKP(ptr))) == 0)
-        {
-            //calculate the space missing
+    //if lack space
+    if(blockbuff < 0){
+        if(GET_ALLOC(HDRP(NEXT_BLKP(ptr)))==0 || GET_SIZE(HDRP(NEXT_BLKP(ptr))) == 0){
             remain = GET_SIZE(HDRP(ptr)) + GET_SIZE(HDRP(NEXT_BLKP(ptr))) - newsize;
-            //not enough space
-            if(remain < 0)
-            {
+            // no split
+            if(remain < 0){
                 extend = MAX ( -remain, CHUNKSIZE);
-                //can not extend the heap
                 if(extend_heap(extend) == NULL)
                     return NULL;
                 remain += extend;
             }
-
             delete_node(NEXT_BLKP(ptr));
-
-            //do not split block, update the info of the current block
             PUT_NOTAG(HDRP(ptr), PACK(newsize + remain,1));
             PUT_NOTAG(FTRP(ptr), PACK(newsize + remain,1));
-
         }
-        else
-        {
-            //enough space to allocated into the block
+        // has space in block
+        else{
             oldptr = mm_malloc(newsize -DSIZE);
             memcpy( oldptr, ptr, MIN(size,newsize));
             mm_free(ptr);
@@ -437,10 +418,9 @@ void *mm_realloc(void *ptr, size_t size)
         blockbuff = GET_SIZE(HDRP(oldptr)) - newsize;
     }
 
-    if(blockbuff < 2 * REALLOC_BUFFER)
-    {
+    if(blockbuff < 2 * REALLOC_BUFFER){
         SET_RATAG(HDRP(NEXT_BLKP(oldptr)));
     }
-    //return the reallocation block
+    // return old pointer
     return oldptr;
 }
