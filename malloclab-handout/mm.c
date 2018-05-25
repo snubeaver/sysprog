@@ -1,13 +1,28 @@
-/*
- * mm-naive.c - The fastest, least memory-efficient malloc package.
- *
- * In this naive approach, a block is allocated by simply incrementing
- * the brk pointer.  A block is pure payload. There are no headers or
- * footers.  Blocks are never coalesced or reused. Realloc is
- * implemented directly using mm_malloc and mm_free.
- *
- * NOTE TO STUDENTS: Replace this header comment with your own header
- * comment that gives a high level description of your solution.
+/* 2012-11933 stu202
+
+  among three type of lists, {Implicit list, Explicit list, Segregated list}
+  we will choose segregated list, since it keeps list of free lists so that we can efficiently allocate memories
+
+    allocated list
+  ------------------------------------------------------
+  |        |                                   |       |
+  | size/a |     payload                       | size/a|
+  |        |                                   |       |
+  ------------------------------------------------------
+    free list
+  ------------------------------------------------------
+  |        |        |        |                 |       |
+  | size/a |  Next  |  Prev  |  (empty space)  | size/a|
+  |        |        |        |                 |       |
+  ------------------------------------------------------
+
+    free list will be segregated by byte size,
+    so in nth free list, the size will be 2^n to c^n+1
+    we are going to use shift func to make this happen
+
+
+
+
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,15 +43,18 @@
 // macros
 #define WSIZE 4
 #define DSIZE 8
+// initial page size
 #define INITCHUNKSIZE (1<<6)
+// page size
 #define CHUNKSIZE (1<<12)
 
-#define LIST 20
-#define REALLOC_BUFFER (1<<7)
+// BUFFER for relloc
+#define BUFFER (1<<7)
 
 // Read, write in location p
 #define GET(p) (*(unsigned int *)(p))
 #define PUT(p, val) (*(unsigned int *)(p) = (val) | GET_TAG(p))
+// clear put
 #define PUT_NOTAG(p, val) (*(unsigned int *)(p) = (val))
 
 // set pointer for free block
@@ -48,8 +66,8 @@
 
 // modify or get tag from address p
 #define GET_TAG(p) (GET(p) & 0x2)
-#define SET_RATAG(p) (GET(p) |= 0x2)
-#define REMOVE_RATAG(p) (GET(p) &= ~0x2)
+#define SET_RATAG(p) (GET(p) |= 0x2) //set realloc tag
+#define REMOVE_RATAG(p) (GET(p) &= ~0x2) //clear realloc tag
 
 //block's header and footer
 #define HDRP(ptr) ((char *)(ptr) - WSIZE)
@@ -72,6 +90,11 @@
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define PACK(size, alloc) ((size) | (alloc))
 
+// segregated list, max to 20
+#define LIST 20
+void *free_lists[LIST];
+
+
 //heap checker
 #ifdef DEBUG
 # define CHECKHEAP(lineno) printf("%s\n", __func); mm_checkheap(__LINE__);
@@ -79,7 +102,6 @@
 
 
 // my function implemented
-void *free_lists[LIST];
 static void *extend_heap(size_t size);
 static void *coalesce(void *ptr);
 static void *place(void *ptr, size_t asize);
@@ -87,29 +109,24 @@ static void insert_node(void *ptr, size_t size);
 static void delete_node(void *ptr);
 static int mm_check(void);
 
-static void *extend_heap(size_t size){
-  size_t tempsize=size;
-  void * ptr = mem_sbrk(tempsize);
-  if(ptr==(void *)-1)
-    return NULL;
-  //header
-  PUT_NOTAG(HDRP(ptr), PACK(tempsize,0));
-  //footer
-  PUT_NOTAG(FTRP(ptr), PACK(tempsize,0));
-  PUT_NOTAG(HDRP(NEXT_BLKP(ptr)), PACK(0,1));
-
-  //add to free
-  insert_node(ptr, tempsize);
-
-  return coalesce(ptr);
-}
 
 
-//insert node to freelist
+/*
+ insert_node function will insert node to freelist
+ for we are using segregated free list, we will check the size
+ and check which segregated list we should use
+
+ insertion will be done from the front of the list
+*/
 static void insert_node(void *ptr, size_t size){
+  // i will be the index for which free list we use
   int i;
+
+  // initialize next, prev pointer
   void *next = ptr;
   void *prev = NULL;
+
+  //select size
   for (i=0;i<LIST-1; i++){
     if(size>1){
       size =size>>1;
@@ -189,6 +206,48 @@ static void delete_node(void *ptr){
   return;
 }
 
+
+static void *extend_heap(size_t size){
+  // target_size is size that we would like to extend to
+  size_t target_size=size;
+  // mem_sbrk will extend area of data segment and return endline address
+  void * ptr = mem_sbrk(target_size);
+
+  // if there are not enough space
+  if(ptr==(void *)-1)
+    return NULL;
+
+  //header
+  PUT_NOTAG(HDRP(ptr), PACK(target_size,0));
+  //footer
+  PUT_NOTAG(FTRP(ptr), PACK(target_size,0));
+  PUT_NOTAG(HDRP(NEXT_BLKP(ptr)), PACK(0,1));
+
+  //add to free
+  insert_node(ptr, tempsize);
+
+  // see if we can coalesce with adjacent blocks
+  return coalesce(ptr);
+}
+
+/*
+coalesce will join prev block and next block if they are free
+so first we will see if prev, next bock are allocated,
+then we will do certain actions as following cases
+
+case 1 : prev alloc & next_alloc
+ - cannot coalesce anything
+
+case 2 : prev alloc & !next_alloc
+ - coalesce with next block
+
+case 3 : !prev alloc & next_alloc
+ - can coalesce with prev block
+
+case 4 : !prev_allc & !next_alloc
+ - can coalesce both prev, next block
+*/
+
 static void * coalesce(void *ptr){
   // check if near nodes allocated
   size_t prev_alloc = GET_ALLOC(HDRP(PREV_BLKP(ptr)));
@@ -199,19 +258,6 @@ static void * coalesce(void *ptr){
   if(GET_TAG(HDRP(PREV_BLKP(ptr)))==1){
     prev_alloc = 1;
   }
-  /*
-  case 1 : prev alloc & next_alloc
-   - cannot coalesce anything
-
-  case 2 : prev alloc & !next_alloc
-   - coalesce with next block
-
-  case 3 : !prev alloc & next_alloc
-   - can coalesce with prev block
-
-  case 4 : !prev_allc & !next_alloc
-   - can coalesce both prev, next block
-  */
 
   // case 1
   if(prev_alloc==1 && next_alloc==1){
@@ -249,33 +295,38 @@ static void * coalesce(void *ptr){
   return ptr;
 }
 
-//decide whether to splic the space
+/*
+place will set header and footer for newly allocated block,
+and also it will split there are enough space left
+
+
+*/
 static void * place(void * ptr, size_t asize){
   size_t size = GET_SIZE(HDRP(ptr));
-  size_t remain = size - asize;
+  size_t remainder = size - asize;
   delete_node(ptr);
   // do not split
-  if(remain <= DSIZE*2) {
+  if(remainder <= DSIZE*2) {
     PUT(HDRP(ptr), PACK(size,1));
     PUT(FTRP(ptr), PACK(size,1));
   }
   // split
   else if(asize >= 100){
-    PUT(HDRP(ptr), PACK(remain,0));
-    PUT(FTRP(ptr), PACK(remain,0));
+    PUT(HDRP(ptr), PACK(remainder,0));
+    PUT(FTRP(ptr), PACK(remainder,0));
     PUT_NOTAG(HDRP(NEXT_BLKP(ptr)), PACK(asize,1));
     PUT_NOTAG(FTRP(NEXT_BLKP(ptr)), PACK(asize,1));
     //insert splited remain to free list
-    insert_node(ptr,remain);
+    insert_node(ptr,remainder);
     return NEXT_BLKP(ptr);
   }
   //split, put at the beginning of block
   else{
     PUT(HDRP(ptr), PACK(asize,1));
     PUT(FTRP(ptr), PACK(asize,1));
-    PUT_NOTAG(HDRP(NEXT_BLKP(ptr)), PACK(remain,0));
-    PUT_NOTAG(FTRP(NEXT_BLKP(ptr)), PACK(remain,0));
-    insert_node(NEXT_BLKP(ptr),remain);
+    PUT_NOTAG(HDRP(NEXT_BLKP(ptr)), PACK(remainder,0));
+    PUT_NOTAG(FTRP(NEXT_BLKP(ptr)), PACK(remainder,0));
+    insert_node(NEXT_BLKP(ptr),remainder);
   }
   return ptr;
 }
@@ -392,7 +443,7 @@ void *mm_realloc(void *ptr, size_t size){
     }
     else{
         newsize =ALIGN(size + DSIZE);
-    }newsize += REALLOC_BUFFER;
+    }newsize += BUFFER;
     blockbuff = GET_SIZE(HDRP(ptr)) - newsize;
     //if lack space
     if(blockbuff < 0){
@@ -418,9 +469,23 @@ void *mm_realloc(void *ptr, size_t size){
         blockbuff = GET_SIZE(HDRP(oldptr)) - newsize;
     }
 
-    if(blockbuff < 2 * REALLOC_BUFFER){
+    if(blockbuff < 2 * BUFFER){
         SET_RATAG(HDRP(NEXT_BLKP(oldptr)));
     }
     // return old pointer
     return oldptr;
 }
+//
+// static void block_check(void *ptr){
+//   if((size_t)ptr %8){
+//     printf("%p is not alligned properly\n", ptr );
+//   }
+//   if(GET(HDRP(ptr))!= GET(FTRP(ptr))){
+//     printf("header and footer differ\n" );
+//   }
+// }
+//
+// int mm_checkheap(int line){
+//   char init =0;
+//   if((GET_SIZE(HDRP(init))!=))
+// }
